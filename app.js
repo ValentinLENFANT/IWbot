@@ -1,124 +1,198 @@
-/**
- * Created by Valentin on 12/09/2017.
- */
+const restify = require('restify');
+const botbuilder = require('botbuilder');
 
-var restify = require('restify');
-var botbuilder = require('botbuilder');
+// setup restify server
 
-// restify server setup
-var server = restify.createServer();
-server.listen(process.env.port || process.env.PORT || 3987, function(){
-    console.log(`${server.name} bot started at ${server.url}`);
+const server = restify.createServer();
+server.listen(process.env.port || process.env.PORT || 3978, function(){
+    console.log('%s bot started at %s', server.name, server.url);
 });
 
 // create chat connector
-var connector = new botbuilder.ChatConnector({
+
+const connector = new botbuilder.ChatConnector({
     appId: process.env.APP_ID,
     appPassword: process.env.APP_SECRET
 });
 
-// listening for user inputs
+// Listening for user input
+
 server.post('/api/messages', connector.listen());
 
-// reply by echoing
-var bot = new botbuilder.UniversalBot(connector, [
-    function(session) {
-        session.beginDialog('ensureProfile');
+// Reply by echoing
 
-        // bot.on('typing', function(response) {
-        //     session.send(response); // Rajouter cette ligne corrige le Bug de messages dupliqués
-        //     session.send("ah tu es encore en train de taper..");
-        // });
-
-        bot.on('conversationUpdate', function(message) {
-            if(message.membersAdded && message.membersAdded.length > 0) {
-                var membersAdded = message.membersAdded.map(function (x) {
-                    var isSelf = x.id === message.address.bot.id;
-                    return (isSelf ? message.address.bot.name : x.name) || ' ' + 'Id = ' + x.id + ')'
-                }).join(', ');
-                bot.send(new botbuilder.Message()
-                    .address(message.address)
-                    .text('Bienvenue' + membersAdded)
-                );
-            }
-        });
+var mainMenu = {
+    "Create a new alarm" : {
+        "choice": "create"
     },
-    function(session, generic) {
-        botbuilder.Prompts.text(session, `${generic.temp}`);
-        session.endConversation("See you soon!");
+    "Display the active alarms" : {
+        "choice": "showActive"
+    },
+    "Display all the alarms": {
+        "choice": "showAll"
+    }
+}
+
+let bot = new botbuilder.UniversalBot(connector, [
+    function(session) {
+        session.beginDialog('mainMenu');
     }
 ]);
 
-bot.dialog('greetings', [
-    function(session) {
-        session.beginDialog('askName');
-    },
-    function(session, generic) {
-        session.endDialogWithResult(generic);
-    }
-]);
+let alarms = [];
 
-bot.dialog('askName', [
+bot.dialog('mainMenu', [
     function(session) {
-        botbuilder.Prompts.text(session, "Hi, what's your name ?");
+        botbuilder.Prompts.choice(session, 'Make your choice : ', mainMenu, {
+            listStyle: botbuilder.ListStyle["button"]
+        });    
     },
     function(session, results) {
-        var temp = "Hello mate!";
-        var generic = {
-            temp: temp,
-            results: results
-        };
-        session.endDialogWithResult(generic);
-    }
+        session.beginDialog(mainMenu[results.response.entity].choice);
+    } 
 ]);
 
-bot.dialog('ensureProfile', [
+bot.dialog('create', [
     function(session, args, next) {
-        session.dialogData.profile = args || {};
-        if(!session.dialogData.profile.name){
-            botbuilder.Prompts.text(session, "What is your name?");
-        } else {
+        session.dialogData.alarm = args || {};
+        if(!session.dialogData.alarm.name) {
+            botbuilder.Prompts.text(session, "Choose the alarm's name :");
+        }else{
             next();
-        }
+        }     
     },
-    function (session, results, next) {
+    function(session, results, next) {
         if(results.response) {
-            session.dialogData.profile.name = results.response;
+            session.dialogData.alarm.name = results.response;
         }
-        if(!session.dialogData.profile.company) {
-            botbuilder.Prompts.text(session, "What company do you work for?");
-        } else {
+
+        if(!session.dialogData.alarm.date) {
+            botbuilder.Prompts.time(session, "Now tell me when I need to create the alarm (date & hour) : " + session.dialogData.alarm.name + " ?");
+        }else{
             next();
         }
     },
-    function(session, results) {
-        if(results.response){
-            session.dialogData.profile.company = results.response;
+    function(session, results, next) {
+        if(results.response) {
+            session.dialogData.alarm.time = botbuilder.EntityRecognizer.resolveTime([results.response]);
         }
-        session.endDialogWithResult({response: session.dialogData.profile})
-    }
-]);
 
-bot.dialog('dinnerOrder', [
-    function(session, results){
-        if(results.response){
-            session.dialogData.room = results.response;
-            var msg = `Thank you. Your order will be delivered to room #${session.dialogData.room}`;
-            session.endConversation(msg);
+        if(!session.dialogData.alarm.active) {
+            botbuilder.Prompts.confirm(session, "Would you like to turn on this alarm ?");
         }
+    },
+    function(session, results, next) {
+        if(results.response) {
+            session.dialogData.alarm.active = results.response;
+        }
+
+        let alarm = {
+            "name" : session.dialogData.alarm.name,
+            "time" : session.dialogData.alarm.time,
+            "active" : session.dialogData.alarm.active
+        }
+        
+        if(alarm.name && alarm.time) {
+            
+            alarms.push(alarm);
+            session.userData.alarms = alarms;
+
+            session.send('Your alarm ' + alarm.name + ' has been succesfuly added!');
+            session.replaceDialog('mainMenu');
+        }else{
+            session.replaceDialog('create');
+        }
+        
     }
 ])
-.endConversationAction(
-    "endOrderDinner", "Ok. Goodbye.",
+.reloadAction(
+    "restart", "",
     {
-        matches: /^cancel$|^goodbye$/i,
-        confirmPrompt: "This will cancel your order. Are you sure?"
+        matches: /^restart/i,
+        confirmPrompt: "You will cancel the current alarm, are you sure?"
+    }
+)
+.cancelAction(
+    "cancel", "Fine, I cancelled the creation of the alarm.",
+    {
+        matches: /^cancel/i,
+        confirmPrompt: "Are you sure you want to cancel?"
     }
 );
 
-//Bot de réservation pour manger dans un restaurant
-//Greeting et récupération de nom
-//1) Date de la réservation
-//2) Le nombre de personnes
-//3) Le nom de la personne qui porte la réservation
-//End --> Le bot me confirme la réservation avec toutes les informations
+
+
+bot.dialog('showAll', [
+    function(session) {
+        let message = "Here are your alarms : <br/>"
+
+        if(session.userData.alarms) {
+            for(let alarm of session.userData.alarms) {
+                console.log(alarm);
+                let isActivated = (alarm.active) ? "Active" : "Inactive";
+    
+                message += "- " + alarm.name + " : " + alarm.time + " | " + isActivated + " <br/>";
+            }
+    
+            session.send(message);
+            session.replaceDialog('mainMenu');
+        }else{
+            session.send('You don\'t have any alarms');
+            session.replaceDialog('mainMenu');
+        }    
+    }
+]);
+
+
+bot.dialog('showActive', [
+    function(session) {
+        let message = "Here are your alarms : <br/>"
+
+        if(session.userData.alarms) {
+            for(let alarm of session.userData.alarms) {
+                if(alarm.active) {
+                    message += "- " + alarm.name + " : " + alarm.time + "<br/>";
+                }
+            }
+    
+            session.send(message);
+            session.replaceDialog('mainMenu');
+        }else{
+            session.send('You don\'t have any active alarms');
+            session.replaceDialog('mainMenu');
+        }
+    }
+]);
+
+bot.on('conversationUpdate', function(message){
+    savedAddress = message.address;
+    let isBot = (message.membersAdded && message.membersAdded.length == 1) ? 
+        message.membersAdded[0].id === message.address.bot.id : false; 
+    if(!isBot) {
+        if(message.membersAdded && message.membersAdded.length > 0) {
+            let membersAdded = message.membersAdded
+            .map(function(x) {
+                let isSelf = x.id === message.address.bot.id;
+                return (isSelf ? message.address.bot.name : x.name) || ' ' + '(Id = ' + x.id + ')';
+            }).join(', ');
+            bot.send(new botbuilder.Message()
+            .address(message.address)
+            .text('Bienvenue !'));
+            bot.beginDialog(message.address, 'mainMenu');
+        }
+
+        if (message.membersRemoved && message.membersRemoved.length > 0) {
+            console.log(message.membersRemoved);
+            let membersRemoved = message.membersRemoved
+                .map(function (m) {
+                    let isSelf = m.id === message.address.bot.id;
+                    return (isSelf ? message.address.bot.name : m.name) || '' + ' (Id: ' + m.id + ')';
+                })
+                .join(', ');
+
+            bot.send(new botbuilder.Message()
+            .address(message.address)
+            .text('Goodbye ' + membersRemoved + '!'));
+        }    
+    }
+});
